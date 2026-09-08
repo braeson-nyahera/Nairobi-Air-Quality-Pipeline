@@ -1,3 +1,27 @@
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.2-python3.11
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__FERNET_KEY: "46pDkYJarsV2e_B9RZBrFJ0cVcOe7R7t0w0vWCo7mU4="
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+    CASSANDRA_HOST: cassandra
+    CASSANDRA_PORT: "9042"
+    CASSANDRA_KEYSPACE: air_quality
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./pipeline:/opt/airflow/pipeline
+    - ./sql:/opt/airflow/sql
+  depends_on:
+    postgres:
+      condition: service_healthy
+    cassandra:
+      condition: service_started
+  restart: unless-stopped
+
 services:
   cassandra:
     image: cassandra:latest
@@ -6,6 +30,60 @@ services:
       - "9042:9042"
     volumes:
       - cassandra_data:/var/lib/cassandra
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cassandra:
+        condition: service_started
+    entrypoint: /bin/bash -c
+    command: >
+      pip install cassandra-driver &&
+      airflow db init &&
+      airflow users create \
+        --username admin \
+        --password admin \
+        --firstname Air \
+        --lastname Quality \
+        --role Admin \
+        --email admin@example.com
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: bash -c "pip install cassandra-driver && airflow webserver"
+    ports:
+      - "8080:8080"
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: bash -c "pip install cassandra-driver && airflow scheduler"
 
 volumes:
-  cassandra_data:   
+  cassandra_data:
+  postgres_data:   
