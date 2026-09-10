@@ -15,6 +15,8 @@ CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
 CASSANDRA_PORT = int(os.getenv("CASSANDRA_PORT", "9042"))
 CASSANDRA_KEYSPACE = os.getenv("CASSANDRA_KEYSPACE", "air_quality")
 
+API_KEY = os.getenv('OpenAQ_API_KEY')
+
 
 default_args = {
     "owner": "airflow",
@@ -32,6 +34,8 @@ default_args = {
     tags=["air-quality", "cassandra"],
 )
 def air_pollution_pipeline():
+    location_ids = []
+    sensors = []
 
     @task
     def create_keyspace_if_needed() -> None:
@@ -55,42 +59,51 @@ def air_pollution_pipeline():
             "limit": 100
             }
          
-        locations = []
+        
 
         response = requests.get(API_URL, headers=headers, params=params)
         response.raise_for_status()
 
         records = response.json()['results']
 
-        for record in records:
-            location_data = {
-                "name" : record['name'],
-                "owner" : record['owner']['name'],
-                "provider" : record['provider']['name'],
-                "number_of_sensors" : len(record['sensors'])}
+        return records
 
-        locations.append(location_data)
-
-        return locations
-
-    
-        
     @task
-    def fetch_air_quality_data() -> list[dict]:
-        params = {
-            "coordinates": "-1.286389,36.817223",
-            "radius": 25000,
-            "limit": 100,
-        }
-        headers = {"X-API-Key": os.getenv("OpenAQ_API_KEY", "")}
+    def extract_sensors(location):
 
-        response = requests.get(API_URL, params=params, headers=headers, timeout=30)
+        location_id = location['id']
+        headers = {
+            "X-API-Key": API_KEY,
+            }
+            
+
+        response = requests.get(f"{API_URL}/{location_id}/sensors", headers=headers)
         response.raise_for_status()
-        data = response.json()
 
-        results = data.get("results", [])
+        sensors = response.json()['results']
 
-        return results
+        return sensors
+    
+    @task
+    def extract_measurements(sensor):
+
+        sensor_id = sensor['id']
+
+        headers = {
+            "X-API-Key": API_KEY,
+            }
+            
+        response = requests.get(f"{API_URL}sensors/{sensor_id}/measurements", headers=headers)
+        response.raise_for_status()
+
+        return response.json()
+
+    @task 
+    def create_data_for_db(locations_data, sensors_data, measurements_data):
+        list_data = locations_data + sensors_data + measurements_data
+
+        return list_data
+    
     @task
     def write_to_cassandra(**context) -> None:
         records = context["task_instance"].xcom_pull(task_ids="extract_air_quality")
@@ -142,5 +155,12 @@ def air_pollution_pipeline():
             )
 
         cluster.shutdown()
+
+    locations_data = extract_locations()
+
+    sensors_data = extract_sensors.expand(location=locations_data)
+    measurements_data = extract_measurements.expand(sensor = sensors_data)
+
+    data_for_db = create_data_for_db(locations_data, sensors_data, measurements_data)
 
 air_pollution_pipeline()
