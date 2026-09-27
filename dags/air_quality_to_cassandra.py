@@ -4,9 +4,12 @@ import os
 import time
 import requests
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
 from airflow.sdk import dag, task
 from cassandra.cluster import Cluster
+
+load_dotenv()
 
 API_URL = "https://api.openaq.org/v3"
 CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
